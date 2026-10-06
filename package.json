@@ -13,7 +13,7 @@
     "web": "vite --host 0.0.0.0",
     "build": "vite build",
     "desktop": "electron .",
-    "build:win": "npm run build && electron-builder --win nsis --x64",
+    "build:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/undici-compat.cjs && node --check src/lib/launcher.js && node scripts/check-undici-compat.cjs && vite build"
   },
   "dependencies": {
