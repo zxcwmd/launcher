@@ -29,7 +29,24 @@ jobs:
         run: npm run check
 
       - name: Build Windows x64 installer
-        run: npm run build:win
+        shell: pwsh
+        run: |
+          npm run build:win *> build-windows.log
+          $buildExitCode = $LASTEXITCODE
+          Get-Content build-windows.log
+          if ($buildExitCode -ne 0) {
+            "### Installer build failed" | Add-Content $env:GITHUB_STEP_SUMMARY
+            Get-Content build-windows.log -Tail 100 | Add-Content $env:GITHUB_STEP_SUMMARY
+            exit $buildExitCode
+          }
+
+      - name: Report installer build failure
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path build-windows.log) {
+            Get-Content build-windows.log -Tail 40 | ForEach-Object { Write-Output "::error::$($_)" }
+          }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
