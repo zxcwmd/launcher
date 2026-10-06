@@ -39,9 +39,14 @@ jobs:
           if ($buildExitCode -ne 0) {
             "### Installer build failed" | Add-Content $env:GITHUB_STEP_SUMMARY
             Get-Content build-windows.log -Tail 100 | Add-Content $env:GITHUB_STEP_SUMMARY
-            $tail = (Get-Content build-windows.log -Tail 80) -join "`n"
-            $escapedTail = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::error title=Windows installer build failed::$escapedTail"
+            $logText = Get-Content build-windows.log -Raw
+            $tail = $logText.Substring([Math]::Max(0, $logText.Length - 7200))
+            for ($end = $tail.Length; $end -gt 0; $end -= 900) {
+              $start = [Math]::Max(0, $end - 900)
+              $chunk = $tail.Substring($start, $end - $start)
+              $escapedChunk = $chunk.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Windows installer build log::$escapedChunk"
+            }
             exit $buildExitCode
           }
 
