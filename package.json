@@ -1,6 +1,6 @@
 {
   "name": "lumen-minecraft-launcher",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Современный лаунчер Minecraft с поддержкой Ely.by",
@@ -14,11 +14,12 @@
     "build": "vite build",
     "desktop": "electron .",
     "build:win": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/undici-compat.cjs && node --check src/lib/launcher.js && node scripts/check-undici-compat.cjs && vite build"
+    "check": "node --check electron/main.cjs && node --check electron/content.cjs && node --check electron/preload.cjs && node --check electron/undici-compat.cjs && node --check src/lib/launcher.js && node scripts/check-undici-compat.cjs && vite build"
   },
   "dependencies": {
     "@xmcl/core": "2.15.1",
     "@xmcl/installer": "6.1.2",
+    "@xmcl/unzip": "^2.1.2",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

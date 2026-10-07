@@ -7,6 +7,7 @@ const patchUndiciRequest = require('./undici-compat.cjs');
 patchUndiciRequest('@xmcl/installer');
 patchUndiciRequest('@xmcl/file-transfer');
 const { launch: launchClient } = require('@xmcl/core');
+const { createContentService } = require('./content.cjs');
 const {
   fetchJavaRuntimeManifest,
   getVersionList: getMinecraftVersionList,
@@ -35,6 +36,8 @@ let launching = false;
 let cachedVersions = null;
 let cachedVersionsAt = 0;
 let cachedInstallVersions = null;
+let contentService = null;
+let activeGameInstanceId = null;
 
 const settingsFile = () => path.join(app.getPath('userData'), 'launcher-settings.json');
 const accountFile = () => path.join(app.getPath('userData'), 'account.vault');
@@ -258,6 +261,7 @@ function appState() {
       { id: '1.20.1', type: 'release' },
     ],
     gameRunning: Boolean(activeGame),
+    instances: contentService ? contentService.listInstances() : [],
     isDesktop: true,
     secureStorageAvailable: safeStorage.isEncryptionAvailable(),
   };
@@ -459,10 +463,13 @@ async function installMinecraftVersion(version) {
   return resolvedVersion;
 }
 
-async function launchMinecraft({ versionId, serverAddress = '' }) {
+async function launchMinecraft({ versionId, instanceId = '', serverAddress = '' }) {
   if (launching || activeGame) throw new Error('Minecraft уже запущен или готовится к запуску.');
   if (!account) throw new Error('Сначала войдите через Ely.by.');
-  const version = validateGameVersion(versionId);
+  if (contentService?.isInstalling()) throw new Error('Дождитесь завершения установки модов или сборки.');
+  const instance = instanceId ? contentService?.getInstance(instanceId) : null;
+  if (instanceId && !instance) throw new Error('Выбранная сборка больше не найдена.');
+  const version = validateGameVersion(instance?.minecraftVersion || versionId);
   const server = validateServerAddress(serverAddress);
   launching = true;
   emit('progress', { stage: 'prepare', percent: 1, detail: `Подготавливаем Minecraft ${version}…` });
@@ -472,13 +479,23 @@ async function launchMinecraft({ versionId, serverAddress = '' }) {
     if (!refreshed || !account) throw new Error('Сессия Ely.by истекла. Войдите в аккаунт ещё раз.');
     const injectorPath = await downloadAuthlibInjector();
     await fs.mkdir(minecraftRoot(), { recursive: true });
-    const resolvedVersion = await installMinecraftVersion(version);
-    const javaMajor = Number(resolvedVersion.javaVersion?.majorVersion || 21);
+    const baseVersion = await installMinecraftVersion(version);
+    const baseJavaMajor = Number(baseVersion.javaVersion?.majorVersion || 21);
+    const resolvedVersion = instance
+      ? await contentService.prepareInstanceVersion(instance.id, baseJavaMajor)
+      : baseVersion;
+    if (resolvedVersion.minecraftVersion && resolvedVersion.minecraftVersion !== version) {
+      throw new Error('Версия загрузчика сборки не совпадает с установленной версией Minecraft.');
+    }
+    const gamePath = instance ? contentService.getInstancePath(instance.id) : minecraftRoot();
+    if (!gamePath) throw new Error('Не удалось найти папку игровой сборки.');
+    await fs.mkdir(gamePath, { recursive: true });
+    const javaMajor = Number(resolvedVersion.javaVersion?.majorVersion || baseJavaMajor);
     const javaPath = await resolveJavaExecutable(javaMajor);
 
     const serverParts = server ? server.match(/^(.+?)(?::(\d{1,5}))?$/) : null;
     const child = await launchClient({
-      gamePath: minecraftRoot(),
+      gamePath,
       resourcePath: minecraftRoot(),
       version: resolvedVersion,
       javaPath,
@@ -499,17 +516,24 @@ async function launchMinecraft({ versionId, serverAddress = '' }) {
     });
     if (!child) throw new Error('Не удалось запустить игровой процесс Java.');
     activeGame = child;
+    activeGameInstanceId = instance?.id || null;
     emit('progress', { stage: 'ready', percent: 100, detail: 'Игра запущена' });
-    emit('game-started', { version, serverAddress: server });
+    emit('game-started', { version, instanceId: instance?.id || '', instanceName: instance?.name || '', serverAddress: server });
 
     child.stdout?.on('data', (chunk) => emit('game-log', { line: safeLog(chunk.toString().trim()) }));
     child.stderr?.on('data', (chunk) => emit('game-log', { line: safeLog(chunk.toString().trim()) }));
     child.once('close', (code) => {
-      if (activeGame === child) activeGame = null;
+      if (activeGame === child) {
+        activeGame = null;
+        activeGameInstanceId = null;
+      }
       emit('game-closed', { code: Number.isInteger(code) ? code : 0 });
     });
     child.once('error', (error) => {
-      if (activeGame === child) activeGame = null;
+      if (activeGame === child) {
+        activeGame = null;
+        activeGameInstanceId = null;
+      }
       emit('game-error', { message: error.message || 'Ошибка игрового процесса.' });
     });
     return { ok: true };
@@ -569,6 +593,30 @@ function registerIpc() {
     return { canceled: false, path: settings.gameDir };
   });
   ipcMain.handle('launcher:launch', (_event, options) => launchMinecraft(options || {}));
+  ipcMain.handle('launcher:search-content', (_event, options) => contentService.searchContent(options || {}));
+  ipcMain.handle('launcher:create-instance', (_event, options) => {
+    if (activeGame || launching) throw new Error('Закройте Minecraft перед созданием сборки.');
+    return contentService.createInstance(options || {});
+  });
+  ipcMain.handle('launcher:install-mod', (_event, options) => {
+    if (activeGame || launching) throw new Error('Закройте Minecraft перед установкой модов.');
+    return contentService.installMod(options || {});
+  });
+  ipcMain.handle('launcher:install-modpack', (_event, options) => {
+    if (activeGame || launching) throw new Error('Закройте Minecraft перед установкой сборки.');
+    return contentService.installModpack(options || {});
+  });
+  ipcMain.handle('launcher:open-instance-folder', async (_event, instanceId) => {
+    const folder = await contentService.openFolder(instanceId);
+    const error = await shell.openPath(folder);
+    return error ? { ok: false, message: error } : { ok: true, path: folder };
+  });
+  ipcMain.handle('launcher:remove-instance', (_event, instanceId) => {
+    if (activeGameInstanceId && activeGameInstanceId === String(instanceId || '').toLowerCase()) {
+      throw new Error('Нельзя удалить сборку, пока в ней запущена игра.');
+    }
+    return contentService.removeInstance(instanceId);
+  });
   ipcMain.handle('launcher:open-external', async (_event, url) => {
     try {
       const parsed = new URL(String(url));
@@ -629,9 +677,17 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   readSettings();
   account = loadAccount();
+  contentService = createContentService({
+    getRoot: minecraftRoot,
+    getUserData: () => app.getPath('userData'),
+    ensureMinecraft: installMinecraftVersion,
+    resolveJava: resolveJavaExecutable,
+    emit,
+  });
+  await contentService.load();
   registerIpc();
   createWindow();
   app.on('activate', () => {

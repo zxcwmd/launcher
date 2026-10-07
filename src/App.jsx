@@ -3,11 +3,15 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowRight,
+  Archive,
+  Boxes,
   ArrowUpRight,
   Bell,
   Check,
   CheckCircle2,
   ChevronDown,
+  CircleAlert,
+  CloudDownload,
   ChevronRight,
   CircleHelp,
   Clock3,
@@ -19,12 +23,14 @@ import {
   EyeOff,
   FolderOpen,
   Gamepad2,
+  Github,
   Gauge,
   Globe2,
   HardDrive,
   Home,
   Info,
   Library,
+  Layers3,
   LoaderCircle,
   LockKeyhole,
   LogOut,
@@ -33,10 +39,13 @@ import {
   Monitor,
   Newspaper,
   Package,
+  PackageCheck,
   Play,
+  RefreshCw,
   Plus,
   Rocket,
   Search,
+  SlidersHorizontal,
   Server,
   Settings,
   ShieldCheck,
@@ -53,10 +62,12 @@ import { launcherApi } from './lib/launcher.js';
 
 const navItems = [
   { id: 'home', label: 'Главная', icon: Home },
-  { id: 'library', label: 'Версии игры', icon: Library },
-  { id: 'mods', label: 'Моды и сборки', icon: Package, badge: 'NEW' },
-  { id: 'servers', label: 'Мои серверы', icon: Globe2 },
+  { id: 'library', label: 'Версии', icon: Library },
+  { id: 'instances', label: 'Сборки', icon: Boxes },
+  { id: 'mods', label: 'Моды', icon: Package },
+  { id: 'servers', label: 'Серверы', icon: Globe2 },
   { id: 'news', label: 'Новости', icon: Newspaper },
+  { id: 'settings', label: 'Настройки', icon: Settings },
 ];
 
 const initialSettings = {
@@ -68,13 +79,6 @@ const initialSettings = {
   height: 720,
 };
 
-const modSuggestions = [
-  { name: 'Sodium', tag: 'ПРОИЗВОДИТЕЛЬНОСТЬ', color: 'mint', description: 'Оптимизирует рендеринг и помогает получить больше FPS.', url: 'https://modrinth.com/mod/sodium' },
-  { name: 'Iris Shaders', tag: 'ГРАФИКА', color: 'violet', description: 'Поддержка шейдеров с удобной настройкой прямо в игре.', url: 'https://modrinth.com/mod/iris' },
-  { name: 'Lithium', tag: 'ОПТИМИЗАЦИЯ', color: 'amber', description: 'Уменьшает нагрузку на процессор без изменения игрового процесса.', url: 'https://modrinth.com/mod/lithium' },
-  { name: 'Mod Menu', tag: 'ИНТЕРФЕЙС', color: 'blue', description: 'Список установленных модов и быстрый доступ к их настройкам.', url: 'https://modrinth.com/mod/modmenu' },
-];
-
 function getSavedServers() {
   try {
     const parsed = JSON.parse(localStorage.getItem('lumen-saved-servers') || '[]');
@@ -84,11 +88,24 @@ function getSavedServers() {
   }
 }
 
+function getActiveInstanceId() {
+  try {
+    return localStorage.getItem('lumen-active-instance') || '';
+  } catch {
+    return '';
+  }
+}
+
 function formatReleaseDate(value) {
   if (!value) return 'Официальный релиз';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Официальный релиз';
   return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).format(date);
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value) || 0;
+  return new Intl.NumberFormat('ru-RU', { notation: 'compact', maximumFractionDigits: 1 }).format(number);
 }
 
 function PixelMark({ small = false }) {
@@ -197,6 +214,7 @@ function App() {
     account: null,
     settings: initialSettings,
     versions: [],
+    instances: [],
     gameRunning: false,
     isDesktop: launcherApi.isDesktop,
   });
@@ -220,12 +238,32 @@ function App() {
   const [serverError, setServerError] = useState('');
   const [serverSearch, setServerSearch] = useState('');
   const [librarySearch, setLibrarySearch] = useState('');
+  const [releaseFilter, setReleaseFilter] = useState('all');
   const [newsSearch, setNewsSearch] = useState('');
+  const [selectedLoader, setSelectedLoader] = useState('fabric');
+  const [createInstanceOpen, setCreateInstanceOpen] = useState(false);
+  const [createInstanceBusy, setCreateInstanceBusy] = useState(false);
+  const [newInstance, setNewInstance] = useState({ name: '', minecraftVersion: '1.21.4', loader: 'fabric' });
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState('');
-  const [modTab, setModTab] = useState('popular');
+  const [catalogProvider, setCatalogProvider] = useState('modrinth');
+  const [catalogType, setCatalogType] = useState('mod');
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const [debouncedCatalogQuery, setDebouncedCatalogQuery] = useState('');
+  const [catalogLoader, setCatalogLoader] = useState('fabric');
+  const [catalogResults, setCatalogResults] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogRefresh, setCatalogRefresh] = useState(0);
+  const [installingContentId, setInstallingContentId] = useState('');
+  const [contentProgress, setContentProgress] = useState(null);
+  const [activeInstanceId, setActiveInstanceId] = useState(getActiveInstanceId);
+  const [instanceActionId, setInstanceActionId] = useState('');
+  const [appLoaded, setAppLoaded] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState('');
+  const catalogRequestId = useRef(0);
   const toastTimer = useRef(null);
+  const memorySaveTimer = useRef(null);
 
   const account = appState.account;
   const versions = appState.versions?.length ? appState.versions : [
@@ -233,13 +271,17 @@ function App() {
     { id: '1.21.1', type: 'release' },
     { id: '1.20.1', type: 'release' },
   ];
-  const currentVersion = versions.find((version) => version.id === selectedVersion) || versions[0];
+  const currentVersion = versions.find((version) => version.id === selectedVersion) || { id: selectedVersion, type: 'release' };
+  const instances = appState.instances || [];
+  const activeInstance = instances.find((instance) => instance.id === activeInstanceId) || null;
+  const launcherLoaderLabel = { vanilla: 'Vanilla', fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge', quilt: 'Quilt' }[activeInstance?.loader || selectedLoader] || 'Fabric';
 
   useEffect(() => {
     let mounted = true;
     launcherApi.getState().then((nextState) => {
       if (!mounted) return;
       setAppState((current) => ({ ...current, ...nextState }));
+      setAppLoaded(true);
       if (nextState.settings) setSettingsDraft(nextState.settings);
       if (nextState.versions?.length) {
         setSelectedVersion((current) => nextState.versions.some((version) => version.id === current) ? current : nextState.versions[0].id);
@@ -261,7 +303,7 @@ function App() {
     if (type === 'game-started') {
       setGameStatus('running');
       setAppState((state) => ({ ...state, gameRunning: true }));
-      showToast(`Minecraft ${payload.version || selectedVersion} запущен. Удачной игры!`);
+      showToast(`${payload.instanceName || `Minecraft ${payload.version || selectedVersion}`} запущен. Удачной игры!`);
     }
     if (type === 'game-closed') {
       setGameStatus('idle');
@@ -278,6 +320,14 @@ function App() {
     if (type === 'account-changed') {
       setAppState((state) => ({ ...state, account: payload.account || null }));
     }
+    if (type === 'content-progress') {
+      const progressState = { percent: payload.percent ?? null, detail: payload.detail || 'Подготовка установки…' };
+      setContentProgress(progressState);
+      setLaunchProgress(progressState);
+    }
+    if (type === 'instances-changed') {
+      setAppState((state) => ({ ...state, instances: payload.instances || [] }));
+    }
     if (type === 'game-log' || type === 'launcher-log') {
       if (payload.line) setGameLogs((lines) => [...lines.slice(-99), payload.line]);
     }
@@ -287,12 +337,97 @@ function App() {
     localStorage.setItem('lumen-saved-servers', JSON.stringify(savedServers));
   }, [savedServers]);
 
-  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => {
+    if (!appLoaded || !activeInstanceId) return;
+    const hasActive = instances.some((instance) => instance.id === activeInstanceId);
+    if (hasActive) return;
+    const nextId = instances[0]?.id || '';
+    setActiveInstanceId(nextId);
+    try {
+      if (nextId) localStorage.setItem('lumen-active-instance', nextId);
+      else localStorage.removeItem('lumen-active-instance');
+    } catch {
+      // The selected build is also kept in memory for this session.
+    }
+  }, [appLoaded, instances, activeInstanceId]);
+
+  useEffect(() => {
+    if (appLoaded && activeInstance) setSelectedLoader(activeInstance.loader || 'vanilla');
+  }, [appLoaded, activeInstanceId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedCatalogQuery(catalogQuery.trim()), 320);
+    return () => window.clearTimeout(timer);
+  }, [catalogQuery]);
+
+  useEffect(() => {
+    if (view !== 'mods') return undefined;
+    const requestId = ++catalogRequestId.current;
+    setCatalogLoading(true);
+    setCatalogError('');
+    setCatalogResults([]);
+    launcherApi.searchContent({
+      provider: catalogProvider,
+      projectType: catalogProvider === 'github' ? 'modpack' : catalogType,
+      query: debouncedCatalogQuery,
+      gameVersion: selectedVersion,
+      loader: catalogLoader,
+    }).then((result) => {
+      if (requestId !== catalogRequestId.current) return;
+      setCatalogResults(result?.results || []);
+    }).catch((error) => {
+      if (requestId !== catalogRequestId.current) return;
+      setCatalogResults([]);
+      setCatalogError(error?.message || 'Не удалось загрузить каталог.');
+    }).finally(() => {
+      if (requestId === catalogRequestId.current) setCatalogLoading(false);
+    });
+    return () => { catalogRequestId.current += 1; };
+  }, [view, catalogProvider, catalogType, debouncedCatalogQuery, selectedVersion, catalogLoader, catalogRefresh]);
+
+  useEffect(() => () => {
+    window.clearTimeout(toastTimer.current);
+    window.clearTimeout(memorySaveTimer.current);
+  }, []);
+
+  useEffect(() => {
+    function handleKeyboardShortcut(event) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+        setAccountMenuOpen(false);
+      }
+      if (event.key === 'Escape') {
+        setSearchOpen(false);
+        setSearchValue('');
+        setCreateInstanceOpen(false);
+      }
+    }
+    window.addEventListener('keydown', handleKeyboardShortcut);
+    return () => window.removeEventListener('keydown', handleKeyboardShortcut);
+  }, []);
 
   function showToast(message, tone = 'success') {
     setToast({ message, tone });
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 4200);
+  }
+
+  function chooseActiveInstance(instanceId, instanceOverride = null) {
+    const nextId = instanceId || '';
+    const selectedInstance = instanceOverride || instances.find((instance) => instance.id === nextId);
+    setActiveInstanceId(nextId);
+    if (selectedInstance) {
+      setSelectedVersion(selectedInstance.minecraftVersion);
+      setSelectedLoader(selectedInstance.loader || 'vanilla');
+      if (['fabric', 'forge', 'neoforge', 'quilt'].includes(selectedInstance.loader)) setCatalogLoader(selectedInstance.loader);
+    }
+    try {
+      if (nextId) localStorage.setItem('lumen-active-instance', nextId);
+      else localStorage.removeItem('lumen-active-instance');
+    } catch {
+      // The build selection remains active for this session.
+    }
   }
 
   function openAuth() {
@@ -305,6 +440,59 @@ function App() {
     setSettingsOpen(true);
   }
 
+  function selectHomeLoader(loader) {
+    setSelectedLoader(loader);
+    if (['fabric', 'forge', 'neoforge', 'quilt'].includes(loader)) setCatalogLoader(loader);
+    const matchingInstance = instances.find((instance) => instance.minecraftVersion === selectedVersion && (instance.loader || 'vanilla') === loader);
+    if (matchingInstance) chooseActiveInstance(matchingInstance.id, matchingInstance);
+    else if (activeInstanceId) chooseActiveInstance('');
+  }
+
+  function openCreateInstance() {
+    const loader = selectedLoader === 'vanilla' ? 'fabric' : selectedLoader;
+    const loaderLabel = { vanilla: 'Vanilla', fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge', quilt: 'Quilt' }[loader] || 'Fabric';
+    setNewInstance({ name: `${loaderLabel} ${selectedVersion}`, minecraftVersion: selectedVersion, loader });
+    setCreateInstanceOpen(true);
+  }
+
+  async function createInstanceFromForm(event) {
+    event.preventDefault();
+    if (createInstanceBusy) return;
+    setCreateInstanceBusy(true);
+    setContentProgress({ percent: 1, detail: `Подготавливаем Minecraft ${newInstance.minecraftVersion}…` });
+    try {
+      const result = await launcherApi.createInstance({
+        name: newInstance.name.trim(),
+        minecraftVersion: newInstance.minecraftVersion,
+        loader: newInstance.loader,
+      });
+      if (!result?.ok || !result.instance) throw new Error(result?.message || 'Не удалось создать сборку.');
+      setAppState((state) => ({ ...state, instances: result.instances || [...state.instances, result.instance] }));
+      chooseActiveInstance(result.instance.id, result.instance);
+      setCreateInstanceOpen(false);
+      showToast(`Сборка «${result.instance.name}» создана.`);
+    } catch (error) {
+      showToast(error?.message || 'Не удалось создать сборку.', 'error');
+    } finally {
+      setCreateInstanceBusy(false);
+      setContentProgress(null);
+    }
+  }
+
+  function updateQuickMemory(value) {
+    const memoryMax = Number(value);
+    setSettingsDraft((settings) => ({ ...settings, memoryMax }));
+    window.clearTimeout(memorySaveTimer.current);
+    memorySaveTimer.current = window.setTimeout(async () => {
+      try {
+        const result = await launcherApi.saveSettings({ ...appState.settings, ...settingsDraft, memoryMax });
+        if (result?.ok) setAppState((state) => ({ ...state, settings: result.settings || { ...state.settings, memoryMax } }));
+      } catch {
+        showToast('Не удалось сохранить выделение памяти.', 'error');
+      }
+    }, 450);
+  }
+
   async function handleLogout() {
     setAccountMenuOpen(false);
     await launcherApi.logout();
@@ -312,7 +500,7 @@ function App() {
     showToast('Вы вышли из аккаунта Ely.by.');
   }
 
-  async function handleLaunch(server = '') {
+  async function handleLaunch(server = '', instanceId = activeInstance?.id || activeInstanceId) {
     if (!account) {
       openAuth();
       return;
@@ -325,18 +513,105 @@ function App() {
       showToast('Minecraft уже запущен. Переключитесь в окно игры.', 'error');
       return;
     }
+    let requestedInstance = instances.find((entry) => entry.id === instanceId);
+    if (requestedInstance) chooseActiveInstance(requestedInstance.id, requestedInstance);
     setBusy(true);
     setGameStatus('preparing');
     setGameLogs([]);
     setLaunchProgress({ percent: 1, detail: 'Проверяем аккаунт Ely.by…' });
     try {
-      await launcherApi.launch({ versionId: selectedVersion, serverAddress: server || '' });
+      let instance = requestedInstance;
+      if (!instance && selectedLoader !== 'vanilla') {
+        instance = instances.find((entry) => entry.minecraftVersion === selectedVersion && (entry.loader || 'vanilla') === selectedLoader) || null;
+        if (!instance) {
+          const loaderLabel = { fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge', quilt: 'Quilt' }[selectedLoader] || selectedLoader;
+          setLaunchProgress({ percent: 2, detail: `Устанавливаем ${loaderLabel} для Minecraft ${selectedVersion}…` });
+          const created = await launcherApi.createInstance({
+            name: `${loaderLabel} ${selectedVersion}`,
+            minecraftVersion: selectedVersion,
+            loader: selectedLoader,
+          });
+          if (!created?.ok || !created.instance) throw new Error(created?.message || `Не удалось подготовить ${loaderLabel}.`);
+          instance = created.instance;
+          setAppState((state) => ({ ...state, instances: created.instances || [...state.instances, instance] }));
+          chooseActiveInstance(instance.id, instance);
+        } else {
+          chooseActiveInstance(instance.id, instance);
+        }
+      }
+      await launcherApi.launch({
+        versionId: instance?.minecraftVersion || selectedVersion,
+        instanceId: instance?.id || '',
+        serverAddress: server || '',
+      });
     } catch (error) {
       setGameStatus('idle');
       setLaunchProgress({ percent: 0, detail: 'Подготовка…' });
       showToast(error?.message || 'Не удалось запустить Minecraft.', 'error');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function installCatalogItem(item) {
+    if (!item || installingContentId) return;
+    setInstallingContentId(item.id);
+    setContentProgress({ percent: 1, detail: `Подготавливаем ${item.title || 'проект'}…` });
+    try {
+      const result = item.projectType === 'mod'
+        ? await launcherApi.installMod({
+          source: item.source,
+          projectId: item.projectId,
+          title: item.title,
+          iconUrl: item.iconUrl,
+          gameVersion: selectedVersion,
+          loader: catalogLoader,
+          instanceId: activeInstance?.id || activeInstanceId,
+        })
+        : await launcherApi.installModpack({
+          source: item.source,
+          projectId: item.projectId,
+          assetId: item.assetId,
+          title: item.title,
+          iconUrl: item.iconUrl,
+          gameVersion: selectedVersion,
+        });
+      setAppState((state) => ({ ...state, instances: result.instances || state.instances }));
+      if (result.instance?.id) chooseActiveInstance(result.instance.id, result.instance);
+      setContentProgress({ percent: 100, detail: 'Готово — сборка добавлена в библиотеку.' });
+      showToast(item.projectType === 'mod'
+        ? `${item.title} установлен в отдельную сборку.`
+        : `${result.instance?.name || item.title} установлена и готова к запуску.`);
+    } catch (error) {
+      setContentProgress(null);
+      showToast(error?.message || 'Не удалось установить этот проект.', 'error');
+    } finally {
+      setInstallingContentId('');
+      window.setTimeout(() => setContentProgress(null), 1800);
+    }
+  }
+
+  async function openInstanceFolder(instanceId) {
+    try {
+      const result = await launcherApi.openInstanceFolder(instanceId);
+      if (!result.ok) throw new Error(result.message || 'Не удалось открыть папку сборки.');
+    } catch (error) {
+      showToast(error?.message || 'Не удалось открыть папку сборки.', 'error');
+    }
+  }
+
+  async function removeInstance(instance) {
+    if (!instance || !window.confirm(`Удалить «${instance.name}» вместе с её файлами? Общие файлы Minecraft останутся на месте.`)) return;
+    setInstanceActionId(instance.id);
+    try {
+      const result = await launcherApi.removeInstance(instance.id);
+      setAppState((state) => ({ ...state, instances: result.instances || [] }));
+      if (activeInstanceId === instance.id) chooseActiveInstance(result.instances?.[0]?.id || '');
+      showToast(`Сборка «${instance.name}» удалена.`);
+    } catch (error) {
+      showToast(error?.message || 'Не удалось удалить сборку.', 'error');
+    } finally {
+      setInstanceActionId('');
     }
   }
 
@@ -420,161 +695,177 @@ function App() {
   }
 
   function renderHome() {
-    const quickVersions = versions.slice(0, 3);
+    const quickVersions = [currentVersion, ...versions.filter((version) => version.id !== selectedVersion)].slice(0, 4);
+    const loaders = [
+      { id: 'vanilla', label: 'Vanilla' },
+      { id: 'fabric', label: 'Fabric' },
+      { id: 'forge', label: 'Forge' },
+      { id: 'neoforge', label: 'NeoForge' },
+      { id: 'quilt', label: 'Quilt' },
+    ];
+    const stats = [
+      { label: 'ИГРОВОЙ ПРОФИЛЬ', value: account?.username || 'Не подключён', detail: account ? 'Аккаунт Ely.by' : 'Войди через Ely.by', icon: UserRound, tint: 'violet' },
+      { label: 'ВЫБРАННАЯ ВЕРСИЯ', value: currentVersion.id, detail: activeInstance?.name || `${loaders.find((loader) => loader.id === selectedLoader)?.label || 'Vanilla'} · Minecraft`, icon: Gamepad2, tint: 'blue' },
+      { label: 'МОИ СБОРКИ', value: String(instances.length), detail: instances.length === 1 ? 'игровой профиль' : 'игровых профилей', icon: Boxes, tint: 'pink' },
+      { label: 'СЕРВЕРЫ', value: String(savedServers.length), detail: 'в избранном', icon: Server, tint: 'gold' },
+    ];
+    const memoryMax = Number(settingsDraft.memoryMax) || 6;
+
     return (
-      <div className="page page-home">
-        <div className="page-heading home-heading">
-          <div>
-            <div className="eyebrow"><span className="eyebrow-spark"><Sparkles size={13} /></span> ПРОСТОЙ ПУТЬ В ТВОЙ МИР</div>
-            <h1>{account ? `С возвращением, ${account.username}` : 'Твой следующий мир ждёт'}</h1>
-            <p>Всё для игры в одном месте — от входа до последнего сохранения.</p>
-          </div>
-          <button className="round-action" onClick={openSettings} aria-label="Настройки" title="Настройки"><Settings size={17} /></button>
+      <div className="page reference-page reference-home">
+        <div className="ref-welcome-line">
+          <div><span className="ref-kicker"><span className="ref-kicker-star">✦</span> LUMEN LAUNCHER</span><h1>{account ? `С возвращением, ${account.username}` : 'Твой мир начинается здесь'}</h1></div>
+          <div className="ref-online-pill"><span /> {launcherApi.isDesktop ? 'ЛАУНЧЕР ГОТОВ' : 'ПРЕДПРОСМОТР'}</div>
         </div>
 
-        <div className="home-grid">
-          <div className="home-primary">
-            <section className="hero-card">
-              <SceneArtwork />
-              <div className="hero-vignette" />
-              <div className="hero-topline">
-                <span className="hero-label"><span className="live-dot" /> ТВОЯ ИГРА. ТВОИ ПРАВИЛА.</span>
-                <span className="hero-release"><span className="release-dot" /> JAVA EDITION</span>
+        <div className="home-hero-grid">
+          <section className="home-config-card">
+            <div className="home-config-copy">
+              <span className="home-config-eyebrow"><span className="mini-orbit">✦</span> ТВОЯ СЛЕДУЮЩАЯ ИСТОРИЯ</span>
+              <h2>Выбери мир.<br /><em>Начни играть.</em></h2>
+              <p>Настрой версию и загрузчик — всё остальное Lumen подготовит за тебя.</p>
+            </div>
+            <div className="home-config-controls">
+              <div className="home-control-heading"><span>ВЕРСИЯ MINECRAFT</span><button className="inline-control-link" onClick={() => selectPage('library')}>Все версии <ArrowRight size={13} /></button></div>
+              <div className="home-chip-row home-version-row">
+                {quickVersions.map((version) => <button key={version.id} className={`home-choice-chip${version.id === selectedVersion ? ' is-selected' : ''}`} onClick={() => { setSelectedVersion(version.id); chooseActiveInstance(''); }} aria-pressed={version.id === selectedVersion}><span className="choice-dot" />{version.id}{version.id === selectedVersion && <Check size={13} />}</button>)}
               </div>
-              <div className="hero-copy">
-                <div className="hero-pretitle"><span className="hero-line" /> LUMEN LAUNCHER</div>
-                <h2>Мир начинается<br /><em>с одного клика.</em></h2>
-                <p>Выбирай версию, зови друзей и создавай историю, которую захочется продолжить.</p>
-                <div className="hero-actions">
-                  <button className="play-button" onClick={() => handleLaunch()} disabled={busy || gameStatus === 'preparing'}>
-                    {busy || gameStatus === 'preparing' ? <LoaderCircle className="spin" size={18} /> : account ? <Play size={18} fill="currentColor" /> : <Zap size={18} fill="currentColor" />}
-                    <span>{busy || gameStatus === 'preparing' ? 'ГОТОВИМ ИГРУ' : account ? 'ИГРАТЬ' : 'ВОЙТИ И ИГРАТЬ'}</span>
-                    {!busy && gameStatus !== 'preparing' && <ArrowRight size={16} />}
-                  </button>
-                  <div className="hero-version-wrap">
-                    <span className="version-overline">ВЕРСИЯ</span>
-                    <button className={`hero-version${versionMenuOpen ? ' is-open' : ''}`} onClick={() => setVersionMenuOpen((open) => !open)} aria-expanded={versionMenuOpen}>
-                      <span className="version-status-dot" />
-                      <strong>{currentVersion?.id || selectedVersion}</strong>
-                      <ChevronDown size={14} />
-                    </button>
-                    {versionMenuOpen && <div className="version-dropdown">
-                      <div className="dropdown-caption">БЫСТРЫЙ ВЫБОР</div>
-                      {versions.slice(0, 7).map((version) => (
-                        <button key={version.id} className={`version-option${version.id === selectedVersion ? ' selected' : ''}`} onClick={() => { setSelectedVersion(version.id); setVersionMenuOpen(false); }}>
-                          <span>{version.id}</span>
-                          <small>{version.type === 'snapshot' ? 'Снимок' : 'Релиз'}</small>
-                          {version.id === selectedVersion && <Check size={14} />}
-                        </button>
-                      ))}
-                      <button className="dropdown-link" onClick={() => { setVersionMenuOpen(false); selectPage('library'); }}>Все версии <ArrowRight size={13} /></button>
-                    </div>}
-                  </div>
-                </div>
+              <div className="home-control-heading loader-heading"><span>ЗАГРУЗЧИК</span><span className="home-control-hint">Можно сменить позже</span></div>
+              <div className="home-chip-row home-loader-row">
+                {loaders.map((loader) => <button key={loader.id} className={`home-loader-chip${loader.id === selectedLoader ? ' is-selected' : ''}`} onClick={() => selectHomeLoader(loader.id)} aria-pressed={loader.id === selectedLoader}>{loader.label}</button>)}
               </div>
-              <div className="hero-footnote"><span><ShieldCheck size={13} /> Ely.by</span><i /> <span>Безопасный вход</span><i /> <span>Java Edition</span></div>
-              <div className="hero-coordinate"><span className="coordinate-cross">✣</span> 48° 51′ N · 2° 21′ E</div>
-            </section>
+              <div className="home-memory-control">
+                <div className="memory-heading"><span><Cpu size={14} /> ВЫДЕЛЕНО ПАМЯТИ</span><strong>{memoryMax} <small>ГБ</small></strong></div>
+                <input type="range" min="2" max="16" step="1" value={Math.min(16, Math.max(2, memoryMax))} onChange={(event) => updateQuickMemory(event.target.value)} aria-label="Объём выделенной памяти" />
+                <div className="memory-scale"><span>2 ГБ</span><span>16 ГБ</span></div>
+              </div>
+            </div>
+          </section>
 
-            <section className="section-block quick-library">
-              <div className="section-heading">
-                <div><div className="section-kicker">НАЧНИ С ЭТОГО</div><h2>Версии игры</h2></div>
-                <button className="text-link" onClick={() => selectPage('library')}>Вся библиотека <ArrowRight size={15} /></button>
-              </div>
-              <div className="version-cards">
-                {quickVersions.map((version, index) => (
-                  <button key={version.id} className={`quick-version-card${version.id === selectedVersion ? ' is-selected' : ''}`} onClick={() => { setSelectedVersion(version.id); showToast(`Выбрана Minecraft ${version.id}.`); }}>
-                    <span className={`version-card-art version-card-art-${index + 1}`}><span className="art-sun" /><span className="art-hill art-hill-back" /><span className="art-hill art-hill-front" /><span className="art-tree" /></span>
-                    <span className="version-card-body">
-                      <span className="version-card-top"><span>{version.type === 'snapshot' ? 'SNAPSHOT' : 'VANILLA'}</span>{version.id === selectedVersion ? <span className="selected-chip"><Check size={10} /> ВЫБРАНА</span> : <ArrowUpRight size={14} />}</span>
-                      <strong>{version.id}</strong>
-                      <small>{formatReleaseDate(version.releaseTime)}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          </div>
-
-          <aside className="home-aside">
-            <section className={`account-panel${account ? ' account-panel-connected' : ''}`}>
-              <div className="aside-card-top"><span className="section-kicker">ТВОЙ ПРОФИЛЬ</span><span className={`connection-indicator${account ? ' connected' : ''}`}><i /> {account ? 'ПОДКЛЮЧЁН' : 'НЕ ПОДКЛЮЧЁН'}</span></div>
-              {account ? <>
-                <div className="connected-user"><PixelAvatar account={account} /><div><strong>{account.username}</strong><span>Аккаунт Ely.by</span></div><button className="icon-button account-more" onClick={() => setAccountMenuOpen((open) => !open)} aria-label="Меню аккаунта"><ChevronDown size={15} /></button></div>
-                <div className="profile-perks"><span><ShieldCheck size={14} /> Авторизация Ely.by</span><span><CheckCircle2 size={14} /> Профиль готов</span></div>
-                <button className="account-secondary" onClick={() => handleLaunch()}>Продолжить игру <ArrowRight size={14} /></button>
-              </> : <>
-                <div className="account-invite">
-                  <span className="ely-coin"><span>e</span></span>
-                  <div><strong>Войди через Ely.by</strong><p>Используй свой профиль, скин и авторизацию на серверах.</p></div>
-                </div>
-                <button className="ely-login-button" onClick={openAuth}><LockKeyhole size={15} /> Подключить аккаунт <ArrowRight size={14} /></button>
-              </>}
-            </section>
-
-            <section className="setup-card">
-              <div className="setup-card-heading"><div className="setup-icon"><Gauge size={16} /></div><span>СИСТЕМА ГОТОВА</span><span className="setup-status"><i /></span></div>
-              <div className="setup-row"><span><Cpu size={15} /> Выделено памяти</span><strong>{appState.settings?.memoryMax || 6} ГБ</strong></div>
-              <div className="setup-row"><span><Monitor size={15} /> Разрешение</span><strong>{appState.settings?.width || 1280} × {appState.settings?.height || 720}</strong></div>
-              <button className="setup-settings-link" onClick={openSettings}>Настроить игру <ArrowRight size={14} /></button>
-            </section>
-
-            <section className="news-highlight">
-              <div className="news-art">
-                <span className="news-orb" /><span className="news-mountain mountain-one" /><span className="news-mountain mountain-two" /><span className="news-pixel-star">✦</span>
-                <span className="news-art-label"><Sparkles size={11} /> ИДЕЯ ДНЯ</span>
-              </div>
-              <div className="news-highlight-copy"><span className="section-kicker">ТВОЯ СЛЕДУЮЩАЯ ИСТОРИЯ</span><strong>Пора построить что-то большое.</strong><button className="text-link" onClick={() => selectPage('news')}>Вдохновение <ArrowRight size={14} /></button></div>
-            </section>
-          </aside>
+          <section className="player-card">
+            <div className="player-scene" aria-hidden="true">
+              <span className="player-scene-stars stars-one">✦　·　✧</span><span className="player-scene-stars stars-two">·　✦　·</span>
+              <span className="player-moon" /><span className="player-scene-hill hill-back" /><span className="player-scene-hill hill-front" />
+              <div className="pixel-player"><i className="pixel-head" /><i className="pixel-hair" /><i className="pixel-body" /><i className="pixel-arm pixel-arm-left" /><i className="pixel-arm pixel-arm-right" /><i className="pixel-leg pixel-leg-left" /><i className="pixel-leg pixel-leg-right" /></div>
+              <span className="player-scene-ground" />
+            </div>
+            <div className="player-card-content">
+              <span className="player-card-tag"><span /> PLAYER PROFILE</span>
+              <div className="player-card-name">{account?.username || 'Steve'}</div>
+              <p>{account ? 'Твой профиль Ely.by подключён.' : 'Подключи Ely.by, чтобы играть со своим профилем.'}</p>
+              <button className="player-profile-button" onClick={account ? () => setAccountMenuOpen((open) => !open) : openAuth}>{account ? <><PixelAvatar account={account} size="small" /> Аккаунт Ely.by <CheckCircle2 size={14} /></> : <><span className="player-ely-mark">e</span> Войти через Ely.by <ArrowRight size={14} /></>}</button>
+            </div>
+            <span className="player-card-coordinate">THE OVERWORLD <i /> 0, 64, 0</span>
+          </section>
         </div>
 
-        <div className="home-bottom-strip">
-          <div className="bottom-tip-icon"><Info size={16} /></div>
-          <div><strong>Первый запуск?</strong><span>Выбери версию и войди через Ely.by — мы подготовим игровые файлы автоматически.</span></div>
-          <button className="text-link" onClick={() => selectPage('news')}>Как это работает <ArrowRight size={14} /></button>
+        <div className="home-stats-grid">
+          {stats.map((item) => { const Icon = item.icon; return <article className="home-stat-card" key={item.label}><span className={`home-stat-icon stat-${item.tint}`}><Icon size={16} /></span><div className="home-stat-copy"><span>{item.label}</span><strong>{item.value}</strong><small>{item.detail}</small></div><span className="stat-card-spark">✧</span></article>; })}
         </div>
+
+        <section className="home-news-section">
+          <div className="ref-section-heading"><div><span className="ref-kicker">МИР MINECRAFT</span><h2>Новости и события</h2></div><button className="ref-text-link" onClick={() => selectPage('news')}>Все новости <ArrowRight size={14} /></button></div>
+          <article className="home-news-card">
+            <div className="home-news-art"><span className="news-art-moon" /><span className="news-art-mountain news-mountain-back" /><span className="news-art-mountain news-mountain-front" /><span className="news-art-star">✦</span><span className="news-art-cube" /></div>
+            <div className="home-news-copy"><span className="news-label"><Sparkles size={12} /> ОФИЦИАЛЬНЫЙ РЕЛИЗ</span><h3>Minecraft {versions[0]?.id || currentVersion.id}</h3><p>Выбери версию в библиотеке, чтобы открыть новый мир. Lumen скачает необходимые игровые файлы при запуске.</p><button onClick={() => selectPage('library')}>Открыть версии <ArrowRight size={14} /></button></div>
+            <div className="home-news-date"><span>ПОСЛЕДНЯЯ ВЕРСИЯ</span><strong>{formatReleaseDate(versions[0]?.releaseTime)}</strong></div>
+          </article>
+        </section>
       </div>
     );
   }
 
   function renderLibrary() {
-    const filtered = versions.filter((version) => version.id.toLowerCase().includes(librarySearch.toLowerCase()));
+    const filtered = versions.filter((version) => {
+      const matchesQuery = version.id.toLowerCase().includes(librarySearch.trim().toLowerCase());
+      const matchesType = releaseFilter === 'all' || version.type === releaseFilter;
+      return matchesQuery && matchesType;
+    });
+    const filters = [
+      { id: 'all', label: 'Все версии' },
+      { id: 'release', label: 'Релизы' },
+      { id: 'snapshot', label: 'Снимки' },
+    ];
     return (
-      <div className="page page-subpage">
-        <div className="page-heading subpage-heading">
-          <div><div className="eyebrow"><span className="eyebrow-spark"><Library size={13} /></span> ВЫБЕРИ СВОЙ РЕЛИЗ</div><h1>Версии Minecraft</h1><p>Официальные релизы, готовые к установке и запуску.</p></div>
-          <div className="subpage-actions"><button className="outline-button" onClick={() => showToast('Список версий синхронизирован с официальным манифестом Minecraft.') }><Activity size={15} /> Синхронизировано</button></div>
+      <div className="page reference-page reference-subpage">
+        <div className="ref-page-heading"><div><span className="ref-kicker"><Library size={13} /> БИБЛИОТЕКА MINECRAFT</span><h1>Версии игры</h1><p>Выбери официальный релиз или протестируй свежий снимок.</p></div><div className="ref-page-heading-side"><span className="ref-count-pill"><span /> {filtered.length} версий</span></div></div>
+        <div className="ref-library-toolbar">
+          <div className="ref-filter-tabs" role="tablist" aria-label="Тип версии">{filters.map((filter) => <button key={filter.id} role="tab" aria-selected={releaseFilter === filter.id} className={releaseFilter === filter.id ? 'active' : ''} onClick={() => setReleaseFilter(filter.id)}>{filter.label}</button>)}</div>
+          <label className="ref-search-field"><Search size={16} /><input value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder="Найти версию…" aria-label="Найти версию" />{librarySearch && <button onClick={() => setLibrarySearch('')} aria-label="Очистить поиск"><X size={14} /></button>}</label>
         </div>
-        <div className="library-toolbar"><div className="search-field"><Search size={16} /><input value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder="Найти версию…" aria-label="Найти версию" />{librarySearch && <button onClick={() => setLibrarySearch('')} aria-label="Очистить поиск"><X size={14} /></button>}</div><span className="muted-count">{filtered.length} релизов</span></div>
-        <div className="release-grid">
-          {filtered.map((version, index) => <article key={version.id} className={`release-card${version.id === selectedVersion ? ' release-card-selected' : ''}`}>
-            <div className={`release-art release-art-${index % 4}`}><span className="release-art-moon" /><span className="release-art-block block-a" /><span className="release-art-block block-b" /><span className="release-art-block block-c" /><span className="release-art-horizon" /></div>
-            <div className="release-info"><div className="release-meta"><span className="mini-tag">{version.type === 'snapshot' ? 'SNAPSHOT' : 'VANILLA'}</span>{version.id === selectedVersion && <span className="active-tag"><Check size={10} /> ВЫБРАНА</span>}</div><h3>{version.id}</h3><p>{formatReleaseDate(version.releaseTime)}</p><button className={version.id === selectedVersion ? 'release-select selected' : 'release-select'} onClick={() => { setSelectedVersion(version.id); showToast(`Minecraft ${version.id} выбрана для запуска.`); }}>{version.id === selectedVersion ? 'Выбрана' : 'Выбрать версию'}{version.id === selectedVersion ? <Check size={14} /> : <ArrowRight size={14} />}</button></div>
-          </article>)}
-          {!filtered.length && <div className="empty-state"><Search size={22} /><strong>Ничего не найдено</strong><span>Попробуй другой номер версии.</span></div>}
+        <div className="ref-version-grid">
+          {filtered.map((version, index) => <button key={version.id} type="button" className={`ref-version-card${version.id === selectedVersion ? ' selected' : ''}`} onClick={() => { setSelectedVersion(version.id); chooseActiveInstance(''); }} aria-pressed={version.id === selectedVersion}>
+            <span className={`ref-version-art version-scene-${index % 5}`}><i className="ref-art-moon" /><i className="ref-art-mountain mountain-one" /><i className="ref-art-mountain mountain-two" /><i className="ref-art-surface" /><i className="ref-art-star star-a">✦</i><i className="ref-art-star star-b">✧</i></span>
+            <span className="ref-version-card-body"><span className="ref-version-meta"><span className={`ref-version-type${version.type === 'snapshot' ? ' snapshot' : ''}`}>{version.type === 'snapshot' ? 'SNAPSHOT' : 'VANILLA'}</span>{version.id === selectedVersion && <span className="ref-version-selected"><Check size={11} /> ВЫБРАНА</span>}</span><strong>{version.id}</strong><small>{formatReleaseDate(version.releaseTime)}</small><span className="ref-version-action">{version.id === selectedVersion ? 'Текущая версия' : 'Выбрать версию'} <ArrowRight size={14} /></span></span>
+          </button>)}
+          {!filtered.length && <div className="ref-empty-state"><Search size={22} /><strong>Версии не найдены</strong><span>Измени фильтр или поисковый запрос.</span></div>}
         </div>
-        <div className="library-note"><ShieldCheck size={16} /><span>Файлы игры загружаются с официальных серверов Minecraft. Установка начнётся при первом запуске.</span></div>
+        <div className="ref-info-note"><ShieldCheck size={16} /><span>Игровые файлы загружаются с официальных серверов Minecraft при первом запуске.</span></div>
       </div>
     );
   }
 
   function renderMods() {
+    const loaderNames = { fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge', quilt: 'Quilt' };
+    const isPackSearch = catalogProvider === 'github' || catalogType === 'modpack';
     return (
-      <div className="page page-subpage">
-        <div className="page-heading subpage-heading">
-          <div><div className="eyebrow"><span className="eyebrow-spark"><Package size={13} /></span> СДЕЛАЙ ИГРУ СВОЕЙ</div><h1>Моды и сборки</h1><p>Полезные проекты сообщества Minecraft, которые стоит взять на заметку.</p></div>
-          <button className="outline-button" onClick={() => launcherApi.openExternal('https://modrinth.com/mods')}><ExternalLink size={15} /> Каталог Modrinth</button>
+      <div className="page reference-page reference-subpage reference-mods-page">
+        <div className="ref-page-heading"><div><span className="ref-kicker"><Package size={13} /> КАТАЛОГ СООБЩЕСТВА</span><h1>Моды и сборки</h1><p>Добавь новые возможности или установи готовый модпак в отдельный профиль.</p></div><button className="ref-outline-button" onClick={() => selectPage('instances')}><Boxes size={15} /> Мои сборки <span>{instances.length}</span></button></div>
+        <div className="ref-mod-controls">
+          <div className="ref-mod-control-top">
+            <div className="ref-filter-tabs ref-content-tabs" role="tablist" aria-label="Тип контента">
+              <button className={catalogType === 'mod' && catalogProvider === 'modrinth' ? 'active' : ''} onClick={() => { setCatalogProvider('modrinth'); setCatalogType('mod'); }}><Package size={14} /> Моды</button>
+              <button className={catalogType === 'modpack' ? 'active' : ''} onClick={() => { setCatalogProvider('modrinth'); setCatalogType('modpack'); }}><Boxes size={14} /> Сборки</button>
+            </div>
+            <div className="ref-provider-switch" role="tablist" aria-label="Источник каталога">
+              <button className={catalogProvider === 'modrinth' ? 'active' : ''} onClick={() => { setCatalogProvider('modrinth'); if (catalogType !== 'mod') setCatalogType('modpack'); }}><span className="ref-provider-mark">M</span> Modrinth</button>
+              <button className={catalogProvider === 'github' ? 'active' : ''} onClick={() => { setCatalogProvider('github'); setCatalogType('modpack'); }}><Github size={14} /> GitHub</button>
+            </div>
+          </div>
+          <div className="ref-mod-filter-row">
+            <div className="ref-loader-filters" aria-label="Загрузчик">
+              {Object.entries(loaderNames).map(([loader, label]) => <button key={loader} className={catalogLoader === loader ? 'active' : ''} onClick={() => setCatalogLoader(loader)}>{label}</button>)}
+            </div>
+            <label className="ref-version-select"><span>ИГРА</span><select value={selectedVersion} onChange={(event) => { setSelectedVersion(event.target.value); chooseActiveInstance(''); }} aria-label="Версия Minecraft">{versions.filter((version) => version.type === 'release').map((version) => <option key={version.id} value={version.id}>{version.id}</option>)}</select><ChevronDown size={14} /></label>
+            <form className="ref-catalog-search" onSubmit={(event) => { event.preventDefault(); setDebouncedCatalogQuery(catalogQuery.trim()); }}><Search size={16} /><input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} placeholder={isPackSearch ? 'Найти сборку…' : 'Найти мод…'} aria-label="Поиск каталога" />{catalogQuery && <button type="button" onClick={() => setCatalogQuery('')} aria-label="Очистить поиск"><X size={14} /></button>}<button className="ref-catalog-search-submit" type="submit">Найти</button></form>
+          </div>
         </div>
-        <div className="mods-feature">
-          <div className="mods-feature-icon"><Sparkles size={24} /></div><div><span className="section-kicker">КУРАТОРСКАЯ ПОДБОРКА</span><h2>Больше кадров. Больше атмосферы.</h2><p>Лаунчер пока не меняет игровые файлы модов автоматически. Открой карточку проекта, проверь совместимость с версией игры и установи его по инструкции автора.</p></div><span className="mods-feature-version">{currentVersion?.id || selectedVersion}</span>
+        <div className="ref-results-heading"><div><span className="ref-kicker">{catalogProvider === 'github' ? 'РЕЛИЗЫ СБОРOК' : catalogType === 'mod' ? `${loaderNames[catalogLoader].toUpperCase()} · MINECRAFT ${selectedVersion}` : `MINECRAFT ${selectedVersion}`}</span><h2>{catalogProvider === 'github' ? 'Сборки сообщества' : catalogType === 'mod' ? 'Популярные моды' : 'Готовые модпаки'}</h2></div><div className="ref-result-count">{catalogLoading ? <LoaderCircle className="spin" size={15} /> : <>{catalogResults.length} {catalogResults.length === 1 ? 'проект' : 'проектов'}</>}<button onClick={() => setCatalogRefresh((value) => value + 1)} disabled={catalogLoading} aria-label="Обновить каталог" title="Обновить каталог"><RefreshCw size={14} /></button></div></div>
+        {contentProgress && <div className="content-install-progress"><div className="content-progress-head"><span><CloudDownload size={15} /> УСТАНОВКА КОНТЕНТА</span><strong>{contentProgress.percent == null ? 'ЗАГРУЗКА' : `${contentProgress.percent}%`}</strong></div><div className="content-progress-track"><span style={{ width: `${Math.max(3, contentProgress.percent || 4)}%` }} /></div><p>{contentProgress.detail}</p></div>}
+        {catalogError && <div className="catalog-error"><CircleAlert size={17} /><span>{catalogError}</span><button onClick={() => { setCatalogError(''); setCatalogRefresh((value) => value + 1); }}>Повторить</button></div>}
+        <div className="ref-mod-grid">
+          {catalogResults.map((item) => {
+            const isInstalling = installingContentId === item.id;
+            const isPack = item.projectType === 'modpack';
+            return <article className="ref-mod-card" key={item.id}>
+              <div className="ref-mod-card-top"><span className={`ref-mod-icon${item.iconUrl ? ' has-image' : ''}`}>{item.iconUrl ? <img src={item.iconUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : item.source === 'github' ? <Github size={23} /> : isPack ? <Boxes size={22} /> : <Package size={21} />}</span><span className="ref-mod-source">{item.source === 'github' ? 'GITHUB' : 'MODRINTH'}</span><button className="ref-mod-external" onClick={() => launcherApi.openExternal(item.url)} aria-label={`Открыть ${item.title}`}><ArrowUpRight size={15} /></button></div>
+              <div className="ref-mod-title-row"><h3>{item.title}</h3><span className="ref-mod-type">{isPack ? 'MODPACK' : loaderNames[catalogLoader].toUpperCase()}</span></div>
+              <p className="ref-mod-description">{item.description || 'Описание проекта пока не добавлено автором.'}</p>
+              <div className="ref-mod-author"><span>{item.author ? `от ${item.author}` : item.source === 'github' ? 'GitHub Releases' : 'Сообщество Modrinth'}</span><span><Download size={12} /> {formatCompactNumber(item.downloads || item.stars)}</span></div>
+              <button className="ref-mod-install" onClick={() => installCatalogItem(item)} disabled={Boolean(installingContentId)}>{isInstalling ? <><LoaderCircle className="spin" size={15} /> Устанавливаем…</> : <><Plus size={15} /> {isPack ? 'Установить сборку' : 'Добавить мод'}</>}</button>
+            </article>;
+          })}
+          {!catalogLoading && !catalogError && !catalogResults.length && <div className="ref-catalog-empty"><div className="ref-empty-glow"><Search size={22} /></div><strong>{debouncedCatalogQuery ? 'Ничего не найдено' : 'Ищи новые приключения'}</strong><span>{debouncedCatalogQuery ? 'Попробуй другое название или измени версию игры.' : 'Введите название мода или выберите источник каталога.'}</span></div>}
         </div>
-        <div className="section-heading mods-list-heading"><div><div className="section-kicker">ПОПУЛЯРНОЕ У СООБЩЕСТВА</div><h2>Подборка проектов</h2></div><div className="mod-tabs"><button className={modTab === 'popular' ? 'active' : ''} onClick={() => setModTab('popular')}>Популярное</button><button className={modTab === 'performance' ? 'active' : ''} onClick={() => setModTab('performance')}>Оптимизация</button></div></div>
-        <div className="mod-grid">
-          {modSuggestions.filter((mod) => modTab === 'popular' || ['Sodium', 'Lithium'].includes(mod.name)).map((mod) => <article className="mod-card" key={mod.name}>
-            <div className={`mod-emblem mod-emblem-${mod.color}`}><Package size={19} /></div><span className="mod-tag">{mod.tag}</span><h3>{mod.name}</h3><p>{mod.description}</p><button className="mod-open" onClick={() => launcherApi.openExternal(mod.url)}>Страница проекта <ArrowUpRight size={14} /></button>
+        <div className="ref-info-note"><ShieldCheck size={16} /><span>Моды и сборки устанавливаются в отдельные игровые профили и не изменяют обычную игру.</span></div>
+      </div>
+    );
+  }
+
+  function renderInstances() {
+    const loaderNames = { vanilla: 'Vanilla', fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge', quilt: 'Quilt' };
+    return (
+      <div className="page reference-page reference-subpage reference-builds-page">
+        <div className="ref-page-heading"><div><span className="ref-kicker"><Boxes size={13} /> ТВОИ ИГРОВЫЕ ПРОФИЛИ</span><h1>Сборки</h1><p>Каждая сборка — отдельная папка, настройки и набор модов.</p></div><button className="ref-primary-button" onClick={openCreateInstance}><Plus size={15} /> Создать сборку</button></div>
+        <div className="ref-build-summary"><span><span className="ref-summary-dot" /> {instances.length} {instances.length === 1 ? 'сборка' : 'сборок'} в библиотеке</span><span>Текущий профиль: <strong>{activeInstance?.name || 'Minecraft ' + selectedVersion}</strong></span></div>
+        <div className="ref-build-grid">
+          {instances.map((instance, index) => <article key={instance.id} className={`ref-build-card${instance.id === activeInstanceId ? ' active' : ''}`}>
+            <div className={`ref-build-art build-scene-${index % 5}`}><span className="ref-build-moon" /><span className="ref-build-mountain build-mountain-a" /><span className="ref-build-mountain build-mountain-b" /><span className="ref-build-spark">✦</span><span className="ref-build-loader-icon"><Boxes size={21} /></span>{instance.id === activeInstanceId && <span className="ref-build-current"><span /> АКТИВНА</span>}</div>
+            <div className="ref-build-card-body"><div className="ref-build-meta"><span>{loaderNames[instance.loader] || instance.loader || 'Vanilla'}</span><span>MINECRAFT {instance.minecraftVersion}</span></div><h3>{instance.name}</h3><p>{instance.modCount ? `${instance.modCount} установленных модов` : 'Профиль готов к настройке'}</p><div className="ref-build-card-actions"><button className="ref-build-play" onClick={() => handleLaunch('', instance.id)} disabled={busy || gameStatus === 'preparing'}>{busy && instance.id === activeInstanceId ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />} Играть</button><button className="ref-build-icon-button" onClick={() => openInstanceFolder(instance.id)} title="Открыть папку" aria-label={`Открыть папку ${instance.name}`}><FolderOpen size={15} /></button><button className="ref-build-icon-button danger" onClick={() => removeInstance(instance)} disabled={instanceActionId === instance.id} title="Удалить сборку" aria-label={`Удалить ${instance.name}`}>{instanceActionId === instance.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}</button></div></div>
           </article>)}
+          <button className="ref-create-build-card" onClick={openCreateInstance}><span className="ref-create-build-plus"><Plus size={22} /></span><strong>Новая сборка</strong><span>Создай чистый профиль с любым загрузчиком</span><span className="ref-create-build-link">Настроить <ArrowRight size={14} /></span></button>
         </div>
+        {!instances.length && <div className="ref-empty-hint"><Info size={15} /> Здесь появятся сборки, установленные из каталога модов или созданные вручную.</div>}
       </div>
     );
   }
@@ -582,44 +873,45 @@ function App() {
   function renderServers() {
     const filtered = savedServers.filter((server) => `${server.name} ${server.address}`.toLowerCase().includes(serverSearch.toLowerCase()));
     return (
-      <div className="page page-subpage">
-        <div className="page-heading subpage-heading">
-          <div><div className="eyebrow"><span className="eyebrow-spark"><Globe2 size={13} /></span> ТВОИ ЛЮДИ ЖДУТ</div><h1>Мои серверы</h1><p>Храни любимые адреса и подключайся к ним сразу после запуска игры.</p></div>
-          <button className="primary-small-button" onClick={() => { setServerFormOpen(true); setServerError(''); }}><Plus size={16} /> Добавить сервер</button>
+      <div className="page reference-page reference-subpage reference-servers-page">
+        <div className="ref-page-heading"><div><span className="ref-kicker"><Globe2 size={13} /> ТВОЁ МУЛЬТИПЛЕЕР-ПРОСТРАНСТВО</span><h1>Серверы</h1><p>Храни адреса избранных серверов и подключайся одним нажатием.</p></div><button className="ref-primary-button" onClick={() => { setServerFormOpen((open) => !open); setServerError(''); }}><Plus size={15} /> Добавить сервер</button></div>
+        <div className="ref-server-toolbar"><div className="ref-server-count"><span className="ref-server-pulse" /> {savedServers.length} сохранено</div><label className="ref-search-field"><Search size={16} /><input value={serverSearch} onChange={(event) => setServerSearch(event.target.value)} placeholder="Найти сервер…" aria-label="Найти сервер" />{serverSearch && <button onClick={() => setServerSearch('')} aria-label="Очистить поиск"><X size={14} /></button>}</label></div>
+        {serverFormOpen && <form className="ref-server-form" onSubmit={addServer}><div className="ref-server-form-heading"><span className="ref-server-form-icon"><Server size={17} /></span><div><strong>Добавить сервер</strong><span>Адрес появится в списке избранного.</span></div><button type="button" className="ref-build-icon-button" onClick={() => setServerFormOpen(false)} aria-label="Закрыть"><X size={15} /></button></div><label><span>НАЗВАНИЕ</span><input value={serverName} onChange={(event) => setServerName(event.target.value)} placeholder="Например, Друзья" /></label><label><span>АДРЕС СЕРВЕРА</span><input required value={serverAddress} onChange={(event) => setServerAddress(event.target.value)} placeholder="play.example.net:25565" /></label>{serverError && <p className="ref-server-error"><CircleAlert size={14} /> {serverError}</p>}<button className="ref-primary-button" type="submit"><Plus size={15} /> Сохранить сервер</button></form>}
+        <div className="ref-server-list">
+          {filtered.map((server, index) => <article className="ref-server-card" key={server.id}><span className={`ref-server-icon server-icon-${index % 4}`}><Server size={20} /></span><div className="ref-server-main"><strong>{server.name}</strong><span>{server.address}</span></div><div className="ref-server-saved"><span /> В ИЗБРАННОМ</div><div className="ref-server-actions"><button className="ref-build-icon-button" onClick={() => copyAddress(server.address)} title="Скопировать адрес" aria-label={`Скопировать адрес ${server.address}`}>{copiedAddress === server.address ? <Check size={15} /> : <Copy size={15} />}</button><button className="ref-server-play" onClick={() => handleLaunch(server.address)} disabled={busy || gameStatus === 'preparing'}><Play size={14} fill="currentColor" /> Играть</button><button className="ref-build-icon-button danger" onClick={() => removeServer(server.id)} title="Удалить сервер" aria-label={`Удалить ${server.name}`}><Trash2 size={15} /></button></div></article>)}
+          {!filtered.length && <div className="ref-catalog-empty"><div className="ref-empty-glow"><Server size={22} /></div><strong>{serverSearch ? 'Серверы не найдены' : 'Пока нет серверов'}</strong><span>{serverSearch ? 'Попробуй изменить запрос.' : 'Добавь адрес своего сервера, чтобы подключаться быстрее.'}</span>{!serverSearch && <button className="ref-outline-button" onClick={() => setServerFormOpen(true)}><Plus size={14} /> Добавить первый сервер</button>}</div>}
         </div>
-        <div className="server-summary"><div className="server-summary-icon"><Server size={19} /></div><div><strong>{savedServers.length} {savedServers.length === 1 ? 'сервер' : 'серверов'} в избранном</strong><span>Адреса сохраняются на этом устройстве.</span></div><span className="summary-signal"><i /><Wifi size={15} /></span></div>
-        {savedServers.length > 0 && <div className="server-tools"><div className="search-field"><Search size={16} /><input value={serverSearch} onChange={(event) => setServerSearch(event.target.value)} placeholder="Поиск серверов…" aria-label="Поиск серверов" /></div><span className="muted-count">БЫСТРОЕ ПОДКЛЮЧЕНИЕ</span></div>}
-        {filtered.length > 0 ? <div className="server-list">{filtered.map((server, index) => <article className="server-row" key={server.id}><div className={`server-cube server-cube-${index % 3}`}><Server size={18} /></div><div className="server-info"><strong>{server.name}</strong><span>{server.address}</span></div><div className="server-status-label"><i /> В избранном</div><button className="icon-button" onClick={() => copyAddress(server.address)} aria-label="Скопировать адрес" title="Скопировать адрес">{copiedAddress === server.address ? <Check size={16} /> : <Copy size={16} />}</button><button className="server-join" onClick={() => handleLaunch(server.address)}><Play size={14} fill="currentColor" /> Играть</button><button className="icon-button danger-hover" onClick={() => removeServer(server.id)} aria-label="Удалить сервер" title="Удалить сервер"><Trash2 size={15} /></button></article>)}</div> : <div className="server-empty"><div className="server-empty-art"><span /><span /><span /></div><div className="section-kicker">ТВОЁ МЕСТО ДЛЯ ПРИКЛЮЧЕНИЙ</div><h2>{savedServers.length ? 'Сервер не найден' : 'Здесь пока тихо'}</h2><p>{savedServers.length ? 'Попробуй изменить поисковый запрос.' : 'Добавь адрес любимого сервера — и запускай Minecraft прямо в мультиплеере.'}</p>{!savedServers.length && <button className="outline-button" onClick={() => setServerFormOpen(true)}><Plus size={15} /> Добавить первый сервер</button>}</div>}
-        {serverFormOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setServerFormOpen(false); }}><div className="dialog-card server-dialog" role="dialog" aria-modal="true" aria-labelledby="server-dialog-title"><div className="dialog-top"><span className="dialog-icon"><Server size={17} /></span><button className="icon-button" onClick={() => setServerFormOpen(false)} aria-label="Закрыть"><X size={17} /></button></div><div className="section-kicker">ИЗБРАННОЕ</div><h2 id="server-dialog-title">Добавить сервер</h2><p className="dialog-intro">Укажи адрес — мы сохраним его в твоём списке.</p><form onSubmit={addServer} className="server-form"><label>Название сервера<input value={serverName} onChange={(event) => setServerName(event.target.value)} placeholder="Например, Друзья" maxLength={48} /></label><label>Адрес сервера<input value={serverAddress} onChange={(event) => setServerAddress(event.target.value)} placeholder="play.example.net:25565" autoFocus /></label>{serverError && <span className="form-error">{serverError}</span>}<button className="submit-button" type="submit"><Plus size={16} /> Сохранить сервер</button></form><div className="dialog-footnote"><Info size={13} /> Быстрое подключение использует версию, выбранную в лаунчере.</div></div></div>}
+        <div className="ref-info-note"><Info size={16} /><span>Адрес передаётся игре при запуске. Доступность и статус серверов здесь не проверяются.</span></div>
       </div>
     );
   }
 
   function renderNews() {
     const notes = [
-      { tag: 'НАЧАЛО РАБОТЫ', title: 'Первый запуск без лишних шагов', text: 'Выбери официальный релиз и нажми «Играть». Lumen скачает необходимые игровые файлы при первом старте.', icon: Rocket, tint: 'violet' },
-      { tag: 'АККАУНТ', title: 'Вход через Ely.by', text: 'Подключи игровой профиль Ely.by. Пароль не сохраняется; в настольной версии токен защищён системным хранилищем.', icon: ShieldCheck, tint: 'green' },
-      { tag: 'ПРОИЗВОДИТЕЛЬНОСТЬ', title: 'Подбери память под свой компьютер', text: 'Оставь системе запас оперативной памяти. Для обычной игры часто достаточно 4–6 ГБ.', icon: Cpu, tint: 'amber' },
-      { tag: 'МУЛЬТИПЛЕЕР', title: 'Играй с друзьями', text: 'Добавь адрес сервера в избранное — лаунчер передаст его в быстрый запуск Minecraft.', icon: UsersIcon, tint: 'blue' },
+      { tag: 'БЫСТРЫЙ СТАРТ', title: 'Начни с любимой версии', text: 'Выбери релиз Minecraft. Игровые файлы загрузятся автоматически при первом запуске.', icon: Gamepad2, action: () => selectPage('library'), actionLabel: 'Все версии' },
+      { tag: 'СООБЩЕСТВО', title: 'Собери свой модпак', text: 'Устанавливай моды и готовые сборки из Modrinth или проверенных GitHub Releases.', icon: Package, action: () => selectPage('mods'), actionLabel: 'Открыть каталог' },
+      { tag: 'МУЛЬТИПЛЕЕР', title: 'Играй на любимых серверах', text: 'Добавь адрес в избранное и запускай Minecraft сразу с подключением к серверу.', icon: Globe2, action: () => selectPage('servers'), actionLabel: 'Мои серверы' },
+      { tag: 'ПРОФИЛИ', title: 'Держи сборки отдельно', text: 'Каждая сборка получает собственную папку и не меняет обычные игровые файлы.', icon: Boxes, action: () => selectPage('instances'), actionLabel: 'Мои сборки' },
     ];
     const result = notes.filter((note) => `${note.title} ${note.text} ${note.tag}`.toLowerCase().includes(newsSearch.toLowerCase()));
     return (
-      <div className="page page-subpage">
-        <div className="page-heading subpage-heading"><div><div className="eyebrow"><span className="eyebrow-spark"><Newspaper size={13} /></span> НЕБОЛЬШИЕ ПОДСКАЗКИ</div><h1>Заметки Lumen</h1><p>Всё, что помогает быстрее оказаться в игре.</p></div><div className="search-field news-search"><Search size={16} /><input value={newsSearch} onChange={(event) => setNewsSearch(event.target.value)} placeholder="Поиск по заметкам…" /></div></div>
-        <div className="news-page-feature"><div className="news-feature-sparkle">✦</div><span className="section-kicker">LUMEN GUIDE · 01</span><h2>У каждой большой истории<br /><em>есть маленькое начало.</em></h2><p>Подключи аккаунт, выбери любимую версию и создай новый мир.</p><button className="feature-cta" onClick={() => account ? selectPage('library') : openAuth()}>{account ? 'Выбрать версию' : 'Подключить Ely.by'} <ArrowRight size={15} /></button></div>
-        <div className="note-grid">{result.map((note) => { const Icon = note.icon; return <article className="note-card" key={note.title}><div className={`note-icon note-icon-${note.tint}`}><Icon size={18} /></div><span className="section-kicker">{note.tag}</span><h3>{note.title}</h3><p>{note.text}</p></article>; })}{!result.length && <div className="empty-state"><Search size={22} /><strong>Заметки не найдены</strong><span>Попробуй другой запрос.</span></div>}</div>
+      <div className="page reference-page reference-subpage reference-news-page">
+        <div className="ref-page-heading"><div><span className="ref-kicker"><Newspaper size={13} /> LUMEN GUIDE</span><h1>Новости и советы</h1><p>Полезные заметки, чтобы быстрее оказаться в игре.</p></div><label className="ref-search-field"><Search size={16} /><input value={newsSearch} onChange={(event) => setNewsSearch(event.target.value)} placeholder="Поиск по заметкам…" />{newsSearch && <button onClick={() => setNewsSearch('')} aria-label="Очистить поиск"><X size={14} /></button>}</label></div>
+        <div className="ref-news-feature"><div className="ref-news-feature-art"><span className="feature-moon" /><span className="feature-mountain mountain-a" /><span className="feature-mountain mountain-b" /><span className="feature-spark">✦</span><span className="feature-pixel-cube" /></div><div className="ref-news-feature-copy"><span className="ref-kicker">ТВОЙ СЛЕДУЮЩИЙ МИР</span><h2>Большая история<br /><em>начинается с малого.</em></h2><p>Подключи аккаунт, выбери сборку и отправляйся в приключение.</p><button className="ref-primary-button" onClick={() => account ? selectPage('library') : openAuth()}>{account ? 'Выбрать версию' : 'Подключить Ely.by'} <ArrowRight size={14} /></button></div></div>
+        <div className="ref-news-grid">{result.map((note) => { const Icon = note.icon; return <article className="ref-note-card" key={note.title}><span className="ref-note-icon"><Icon size={18} /></span><span className="ref-kicker">{note.tag}</span><h3>{note.title}</h3><p>{note.text}</p><button onClick={note.action}>{note.actionLabel} <ArrowRight size={14} /></button></article>; })}{!result.length && <div className="ref-empty-state"><Search size={22} /><strong>Заметки не найдены</strong><span>Попробуй другой поисковый запрос.</span></div>}</div>
       </div>
     );
   }
 
   function renderSettingsPage() {
-    return <div className="page page-subpage"><div className="page-heading subpage-heading"><div><div className="eyebrow"><span className="eyebrow-spark"><Settings size={13} /></span> ПЕРСОНАЛЬНЫЕ НАСТРОЙКИ</div><h1>Настройки игры</h1><p>Настрой Lumen под свой компьютер и привычки.</p></div><button className="primary-small-button" onClick={handleSaveSettings} disabled={settingsSaving}>{settingsSaving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Сохранить</button></div><SettingsPanel draft={settingsDraft} setDraft={setSettingsDraft} onChooseFolder={handleChooseFolder} isDesktop={launcherApi.isDesktop} /></div>;
+    return <div className="page reference-page reference-subpage reference-settings-page"><div className="ref-page-heading"><div><span className="ref-kicker"><Settings size={13} /> ПЕРСОНАЛЬНЫЕ НАСТРОЙКИ</span><h1>Настройки</h1><p>Настрой игру и Lumen под свой компьютер.</p></div><button className="ref-primary-button" onClick={handleSaveSettings} disabled={settingsSaving}>{settingsSaving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Сохранить</button></div><SettingsPanel draft={settingsDraft} setDraft={setSettingsDraft} onChooseFolder={handleChooseFolder} isDesktop={launcherApi.isDesktop} /></div>;
   }
 
   function renderCurrentPage() {
     if (view === 'home') return renderHome();
     if (view === 'library') return renderLibrary();
     if (view === 'mods') return renderMods();
+    if (view === 'instances') return renderInstances();
     if (view === 'servers') return renderServers();
     if (view === 'news') return renderNews();
     return renderSettingsPage();
@@ -629,50 +921,44 @@ function App() {
     if (!searchValue.trim()) return [];
     const query = searchValue.toLowerCase();
     return [
-      ...versions.filter((version) => version.id.toLowerCase().includes(query)).slice(0, 4).map((version) => ({ title: `Minecraft ${version.id}`, label: 'Версия игры', action: () => { setSelectedVersion(version.id); selectPage('library'); } })),
+      ...versions.filter((version) => version.id.toLowerCase().includes(query)).slice(0, 4).map((version) => ({ title: `Minecraft ${version.id}`, label: 'Версия игры', action: () => { setSelectedVersion(version.id); chooseActiveInstance(''); selectPage('library'); } })),
       ...savedServers.filter((server) => `${server.name} ${server.address}`.toLowerCase().includes(query)).slice(0, 3).map((server) => ({ title: server.name, label: server.address, action: () => selectPage('servers') })),
       ...navItems.filter((item) => item.label.toLowerCase().includes(query)).slice(0, 3).map((item) => ({ title: item.label, label: 'Раздел', action: () => selectPage(item.id) })),
     ].slice(0, 6);
   }, [searchValue, versions, savedServers]);
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <button className="brand-lockup" onClick={() => selectPage('home')} aria-label="Lumen — главная">
-          <span className="brand-symbol"><PixelMark /></span>
-          <span className="brand-copy"><strong>LUMEN</strong><small>MINECRAFT LAUNCHER</small></span>
-        </button>
-        <button className="new-instance-button" onClick={() => { selectPage('library'); showToast('Выбери релиз, чтобы начать новую установку.'); }}><Plus size={16} strokeWidth={2.2} /><span>Новая версия</span><span className="shortcut">⌘ N</span></button>
-        <div className="sidebar-section-label">БИБЛИОТЕКА</div>
-        <nav className="primary-nav" aria-label="Основная навигация">{navItems.map((item) => { const Icon = item.icon; return <button key={item.id} className={`nav-item${view === item.id ? ' active' : ''}`} onClick={() => selectPage(item.id)}><Icon size={17} strokeWidth={1.9} /><span>{item.label}</span>{item.badge && <span className="nav-badge">{item.badge}</span>}{view === item.id && <span className="nav-active-mark" />}</button>; })}</nav>
-        <div className="sidebar-spacer" />
-        <div className="sidebar-tip"><span className="tip-spark"><Sparkles size={14} /></span><div><strong>Маленькая подсказка</strong><span>Сохраняй адреса серверов для быстрого входа.</span></div></div>
-        <button className={`nav-item settings-nav${view === 'settings' ? ' active' : ''}`} onClick={() => selectPage('settings')}><Settings size={17} strokeWidth={1.9} /><span>Настройки</span>{view === 'settings' && <span className="nav-active-mark" />}</button>
-        <div className="sidebar-account">
-          <div className="sidebar-account-top"><span className="sidebar-account-label">АККАУНТ</span><span className={`account-led${account ? ' on' : ''}`} /></div>
-          {account ? <button className="sidebar-profile-button" onClick={() => setAccountMenuOpen((open) => !open)}><PixelAvatar account={account} size="small" /><span className="sidebar-profile-name"><strong>{account.username}</strong><small>Ely.by</small></span><ChevronDown size={14} /></button> : <button className="sidebar-connect-button" onClick={openAuth}><span className="sidebar-ely-icon">e</span><span>Подключить Ely.by</span><ArrowRight size={13} /></button>}
-          <div className="sidebar-version-info"><span className="sidebar-version-dot" /> Minecraft Java <span>·</span> {currentVersion?.id || selectedVersion}</div>
-        </div>
-      </aside>
-
-      <section className="workspace">
-        <header className="topbar">
-          <div className="topbar-left"><span className="topbar-context">LUMEN <ChevronRight size={12} /> <strong>{getPageTitle()}</strong></span><span className="desktop-status"><i /> {launcherApi.isDesktop ? 'Клиент готов' : 'Предпросмотр'}</span></div>
-          <div className="topbar-actions">
-            <div className={`global-search-wrap${searchOpen ? ' search-expanded' : ''}`}>
-              {searchOpen ? <><Search size={15} /><input autoFocus value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder="Версии, серверы…" onKeyDown={(event) => { if (event.key === 'Escape') { setSearchOpen(false); setSearchValue(''); } }} /><button className="search-close" onClick={() => { setSearchOpen(false); setSearchValue(''); }} aria-label="Закрыть поиск"><X size={14} /></button>{searchValue && <div className="global-search-results">{globalSearchResults.length ? globalSearchResults.map((result, index) => <button key={`${result.title}-${index}`} onClick={() => { result.action(); setSearchOpen(false); setSearchValue(''); }}><span><strong>{result.title}</strong><small>{result.label}</small></span><ArrowUpRight size={14} /></button>) : <div className="search-no-results">Совпадений не найдено</div>}</div>}</> : <button className="topbar-icon-button" onClick={() => setSearchOpen(true)} aria-label="Поиск" title="Поиск"><Search size={17} /></button>}
-            </div>
-            <div className="topbar-popover-wrap"><button className={`topbar-icon-button${notificationOpen ? ' active' : ''}`} onClick={() => { setNotificationOpen((open) => !open); setAccountMenuOpen(false); }} aria-label="Уведомления" title="Уведомления"><Bell size={17} /><span className="notification-dot" /></button>{notificationOpen && <div className="notification-popover"><div className="popover-heading"><strong>Всё спокойно</strong><span className="popover-live"><i /> СЕЙЧАС</span></div><div className="notification-empty"><span><CheckCircle2 size={17} /></span><strong>Ты ничего не пропустил</strong><small>Когда появятся важные обновления, они будут здесь.</small></div></div>}</div>
-            <span className="topbar-divider" />
-            <div className="topbar-popover-wrap"><button className={`topbar-profile${account ? '' : ' topbar-profile-guest'}`} onClick={() => account ? setAccountMenuOpen((open) => !open) : openAuth()} aria-label={account ? `Аккаунт ${account.username}` : 'Войти в Ely.by'}>{account ? <><PixelAvatar account={account} size="small" /><span className="topbar-profile-name"><strong>{account.username}</strong><small>Профиль Ely.by</small></span><ChevronDown size={14} /></> : <><span className="guest-avatar"><UserRound size={16} /></span><span className="topbar-profile-name"><strong>Войти в Ely.by</strong><small>Игровой профиль</small></span><ArrowUpRight size={14} /></>}</button>{accountMenuOpen && account && <div className="account-popover"><div className="popover-account-header"><PixelAvatar account={account} /><span><strong>{account.username}</strong><small>Профиль Ely.by подключён</small></span></div><button onClick={() => { setAccountMenuOpen(false); openSettings(); }}><Settings size={15} /> Настройки игры</button><button className="logout-action" onClick={handleLogout}><LogOut size={15} /> Выйти из аккаунта</button></div>}</div>
-            {launcherApi.isDesktop && <div className="window-controls"><button onClick={() => launcherApi.windowControl('minimize')} aria-label="Свернуть"><Minus size={14} /></button><button onClick={() => launcherApi.windowControl('maximize')} aria-label="Развернуть"><Maximize2 size={13} /></button><button className="window-close" onClick={() => launcherApi.windowControl('close')} aria-label="Закрыть"><X size={14} /></button></div>}
+    <div className={`app-shell reference-shell${launcherApi.isDesktop ? ' is-desktop' : ''}`}>
+      <div className="ref-cosmic-stars" aria-hidden="true" />
+      <div className="ref-cosmic-mountains" aria-hidden="true"><i /><i /><i /><i /></div>
+      <header className="ref-topbar">
+        <div className="ref-search-area">
+          <div className={`ref-global-search${searchOpen ? ' is-open' : ''}`}>
+            {searchOpen ? <><Search size={16} /><input autoFocus value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder="Поиск по лаунчеру…" onKeyDown={(event) => { if (event.key === 'Escape') { setSearchOpen(false); setSearchValue(''); } }} /><button className="ref-search-close" onClick={() => { setSearchOpen(false); setSearchValue(''); }} aria-label="Закрыть поиск"><X size={14} /></button>{searchValue && <div className="ref-global-search-results">{globalSearchResults.length ? globalSearchResults.map((result, index) => <button key={`${result.title}-${index}`} onClick={() => { result.action(); setSearchOpen(false); setSearchValue(''); }}><span><strong>{result.title}</strong><small>{result.label}</small></span><ArrowUpRight size={14} /></button>) : <div className="ref-search-empty">Совпадений не найдено</div>}</div>}</> : <button className="ref-search-trigger" onClick={() => setSearchOpen(true)} aria-label="Поиск"><Search size={16} /><span>Поиск</span><kbd>CTRL K</kbd></button>}
           </div>
-        </header>
-        <main className="main-scroll" onClick={() => { if (versionMenuOpen) setVersionMenuOpen(false); }}>
-          <div className="content-wrap">{renderCurrentPage()}</div>
-          <footer className="app-footer"><span>© 2026 LUMEN LAUNCHER</span><span><span className="footer-dot" /> СДЕЛАНО ДЛЯ ТВОЕГО СЛЕДУЮЩЕГО МИРА</span><button onClick={() => launcherApi.openExternal('https://docs.ely.by/en/minecraft-auth.html')}>ELY.BY AUTH <ExternalLink size={11} /></button></footer>
-        </main>
-      </section>
+        </div>
+        <nav className="ref-main-nav" aria-label="Основная навигация">{navItems.map((item) => { const Icon = item.icon; return <button key={item.id} className={`ref-nav-item${view === item.id ? ' active' : ''}`} onClick={() => selectPage(item.id)} aria-current={view === item.id ? 'page' : undefined}><Icon size={15} strokeWidth={1.8} /><span>{item.label}</span></button>; })}</nav>
+        <div className="ref-topbar-right">
+          <div className="ref-account-wrap"><button className={`ref-account-button${account ? ' connected' : ''}`} onClick={() => account ? setAccountMenuOpen((open) => !open) : openAuth()} aria-label={account ? `Профиль Ely.by: ${account.username}` : 'Войти через Ely.by'}>{account ? <PixelAvatar account={account} size="small" /> : <span className="ref-ely-avatar">e</span>}<span className="ref-account-copy"><strong>{account ? account.username : 'Ely.by'}</strong><small>{account ? 'Подключён' : 'Войти в аккаунт'}</small></span><ChevronDown size={14} /></button>{accountMenuOpen && account && <div className="account-popover ref-account-popover"><div className="popover-account-header"><PixelAvatar account={account} /><span><strong>{account.username}</strong><small>Профиль Ely.by подключён</small></span></div><button onClick={() => { setAccountMenuOpen(false); openSettings(); }}><Settings size={15} /> Настройки игры</button><button className="logout-action" onClick={handleLogout}><LogOut size={15} /> Выйти из аккаунта</button></div>}</div>
+          {launcherApi.isDesktop && <div className="window-controls ref-window-controls"><button onClick={() => launcherApi.windowControl('minimize')} aria-label="Свернуть"><Minus size={13} /></button><button onClick={() => launcherApi.windowControl('maximize')} aria-label="Развернуть"><Maximize2 size={12} /></button><button className="window-close" onClick={() => launcherApi.windowControl('close')} aria-label="Закрыть"><X size={13} /></button></div>}
+        </div>
+      </header>
+
+      <main className="ref-main-scroll" onClick={() => { if (versionMenuOpen) setVersionMenuOpen(false); }}>
+        <div className="ref-content-container">{renderCurrentPage()}</div>
+      </main>
+
+      <div className="ref-play-dock">
+        <div className="ref-dock-version-wrap">
+          <button className={`ref-dock-version${versionMenuOpen ? ' is-open' : ''}`} onClick={() => setVersionMenuOpen((open) => !open)} aria-expanded={versionMenuOpen}>
+            <span className="ref-dock-mark"><PixelMark small /></span><span className="ref-dock-version-copy"><small>ВЕРСИЯ ИГРЫ</small><strong>{activeInstance?.minecraftVersion || selectedVersion}<i />{launcherLoaderLabel}</strong></span><ChevronDown size={15} />
+          </button>
+          {versionMenuOpen && <div className="ref-dock-dropdown"><span className="ref-kicker">БЫСТРЫЙ ВЫБОР</span>{versions.slice(0, 8).map((version) => <button key={version.id} className={version.id === selectedVersion ? 'selected' : ''} onClick={(event) => { event.stopPropagation(); setSelectedVersion(version.id); chooseActiveInstance(''); setVersionMenuOpen(false); }}><span>{version.id}</span><small>{version.type === 'snapshot' ? 'Снимок' : 'Релиз'}</small>{version.id === selectedVersion && <Check size={13} />}</button>)}<button className="ref-dock-all-versions" onClick={(event) => { event.stopPropagation(); setVersionMenuOpen(false); selectPage('library'); }}>Все версии <ArrowRight size={13} /></button></div>}
+        </div>
+        <button className="ref-dock-play" onClick={() => handleLaunch()} disabled={busy || gameStatus === 'preparing' || gameStatus === 'running'}><span className="ref-play-icon">{busy || gameStatus === 'preparing' ? <LoaderCircle className="spin" size={18} /> : gameStatus === 'running' ? <Check size={18} /> : <Play size={17} fill="currentColor" />}</span><span>{busy || gameStatus === 'preparing' ? 'ГОТОВИМ ИГРУ' : gameStatus === 'running' ? 'ИГРА ЗАПУЩЕНА' : 'ИГРАТЬ'}</span><ArrowRight size={16} /></button>
+      </div>
+
+      {createInstanceOpen && <div className="modal-backdrop ref-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !createInstanceBusy) setCreateInstanceOpen(false); }}><form className="ref-create-dialog" onSubmit={createInstanceFromForm} role="dialog" aria-modal="true" aria-labelledby="create-instance-title"><div className="ref-create-dialog-top"><span className="ref-create-dialog-icon"><Boxes size={17} /></span><button type="button" className="ref-build-icon-button" onClick={() => setCreateInstanceOpen(false)} disabled={createInstanceBusy} aria-label="Закрыть"><X size={15} /></button></div><span className="ref-kicker">ОТДЕЛЬНЫЙ ИГРОВОЙ ПРОФИЛЬ</span><h2 id="create-instance-title">Создать сборку</h2><p>Каждая сборка устанавливается отдельно и не меняет другие профили.</p><label className="ref-dialog-field"><span>НАЗВАНИЕ СБОРКИ</span><input autoFocus required maxLength={48} value={newInstance.name} onChange={(event) => setNewInstance((draft) => ({ ...draft, name: event.target.value }))} placeholder="Например, Мой мир с модами" /></label><div className="ref-dialog-field-row"><label className="ref-dialog-field"><span>ВЕРСИЯ ИГРЫ</span><select value={newInstance.minecraftVersion} onChange={(event) => setNewInstance((draft) => ({ ...draft, minecraftVersion: event.target.value }))}>{versions.filter((version) => version.type === 'release').map((version) => <option key={version.id} value={version.id}>{version.id}</option>)}</select></label><label className="ref-dialog-field"><span>ЗАГРУЗЧИК</span><select value={newInstance.loader} onChange={(event) => setNewInstance((draft) => ({ ...draft, loader: event.target.value }))}><option value="vanilla">Vanilla</option><option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option><option value="quilt">Quilt</option></select></label></div><div className="ref-create-dialog-note"><ShieldCheck size={14} /> Установщик подготовит игровые файлы при создании профиля.</div>{createInstanceBusy && <div className="ref-create-progress"><div><span>{contentProgress?.detail || 'Создаём отдельный профиль…'}</span><strong>{contentProgress?.percent == null ? '…' : `${contentProgress.percent}%`}</strong></div><i><span style={{ width: `${Math.max(4, contentProgress?.percent || 4)}%` }} /></i></div>}<div className="ref-create-dialog-actions"><button type="button" className="ref-dialog-cancel" onClick={() => setCreateInstanceOpen(false)} disabled={createInstanceBusy}>Отмена</button><button type="submit" className="ref-primary-button" disabled={createInstanceBusy}>{createInstanceBusy ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} {createInstanceBusy ? 'Создаём…' : 'Создать сборку'}</button></div></form></div>}
 
       {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onSuccess={(result) => { setAppState((state) => ({ ...state, account: result.account })); setAuthOpen(false); showToast(result.message || 'Аккаунт Ely.by подключён.'); }} />}
       {settingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><div className="dialog-card settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title"><div className="dialog-top"><span className="dialog-icon"><Settings size={17} /></span><button className="icon-button" onClick={() => setSettingsOpen(false)} aria-label="Закрыть"><X size={17} /></button></div><div className="section-kicker">ПОД ТВОЙ КОМПЬЮТЕР</div><h2 id="settings-dialog-title">Настройки игры</h2><p className="dialog-intro">Измени параметры запуска. Их можно обновить в любой момент.</p><SettingsPanel draft={settingsDraft} setDraft={setSettingsDraft} onChooseFolder={handleChooseFolder} isDesktop={launcherApi.isDesktop} compact /><div className="dialog-actions"><button className="cancel-button" onClick={() => setSettingsOpen(false)}>Отмена</button><button className="submit-button" onClick={handleSaveSettings} disabled={settingsSaving}>{settingsSaving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Сохранить настройки</button></div></div></div>}

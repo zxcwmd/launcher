@@ -17,6 +17,20 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/minecraft-meta/, ''),
       },
+      '/modrinth-api': {
+        target: 'https://api.modrinth.com/v2',
+        changeOrigin: true,
+        secure: true,
+        headers: { 'User-Agent': 'LumenLauncher/1.0.1 (https://github.com/zxcwmd/launcher)' },
+        rewrite: (path) => path.replace(/^\/modrinth-api/, ''),
+      },
+      '/github-api': {
+        target: 'https://api.github.com',
+        changeOrigin: true,
+        secure: true,
+        headers: { 'User-Agent': 'LumenLauncher/1.0.1 (https://github.com/zxcwmd/launcher)' },
+        rewrite: (path) => path.replace(/^\/github-api/, ''),
+      },
     },
   },
   preview: {
